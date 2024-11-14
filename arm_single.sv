@@ -156,16 +156,16 @@ module arm(input  logic        clk, reset,
 
   logic [3:0] ALUFlags;
   logic       RegWrite, 
-              ALUSrc, MemtoReg, PCSrc;
+              ALUSrc, MemtoReg, PCSrc, Reverse;
   logic [1:0] RegSrc, ImmSrc, ALUControl;
 
   controller c(clk, reset, Instr[31:12], ALUFlags, 
                RegSrc, RegWrite, ImmSrc, 
-               ALUSrc, ALUControl,
+               ALUSrc, Reverse, MemByte, ALUControl,
                MemWrite, MemtoReg, PCSrc);
   datapath dp(clk, reset, 
               RegSrc, RegWrite, ImmSrc,
-              ALUSrc, ALUControl,
+              ALUSrc, Reverse, ALUControl,
               MemtoReg, PCSrc,
               ALUFlags, PC, Instr,
               ALUResult, WriteData, ReadData);
@@ -177,7 +177,7 @@ module controller(input  logic         clk, reset,
                   output logic [1:0]   RegSrc,
                   output logic         RegWrite,
                   output logic [1:0]   ImmSrc,
-                  output logic         ALUSrc, 
+                  output logic         ALUSrc, Reverse, MemByte,
                   output logic [1:0]   ALUControl,
                   output logic         MemWrite, MemtoReg,
                   output logic         PCSrc);
@@ -187,7 +187,7 @@ module controller(input  logic         clk, reset,
   
   decode dec(Instr[27:26], Instr[25:20], Instr[15:12],
              FlagW, PCS, RegW, MemW,
-             MemtoReg, ALUSrc, ImmSrc, RegSrc, ALUControl);
+             MemtoReg, ALUSrc, Reverse, MemByte, ImmSrc, RegSrc, ALUControl);
   condlogic cl(clk, reset, Instr[31:28], ALUFlags,
                FlagW, PCS, RegW, MemW,
                PCSrc, RegWrite, MemWrite);
@@ -198,10 +198,10 @@ module decode(input  logic [1:0] Op,
               input  logic [3:0] Rd,
               output logic [1:0] FlagW,
               output logic       PCS, RegW, MemW,
-              output logic       MemtoReg, ALUSrc,
+              output logic       MemtoReg, ALUSrc, Reverse, MemByte,
               output logic [1:0] ImmSrc, RegSrc, ALUControl);
 
-  logic [9:0] controls;
+	logic [10:0] controls;
   logic       Branch, ALUOp;
 
   // Main Decoder
@@ -209,31 +209,64 @@ module decode(input  logic [1:0] Op,
   always_comb
   	casex(Op)
   	                        // Data processing immediate
-  	  2'b00: if (Funct[5])  controls = 10'b0000101001; 
-  	                        // Data processing register
-  	         else           controls = 10'b0000001001; 
-  	                        // LDR
-  	  2'b01: if (Funct[0])  controls = 10'b0001111000; 
-  	                        // STR
-  	         else           controls = 10'b1001110100; 
-  	                        // B
-  	  2'b10:                controls = 10'b0110100010; 
-  	                        // Unimplemented
-  	  default:              controls = 10'bx;          
+  	  2'b00:   // Data-Processing Instructions
+		   if (Funct[5])
+		      controls = 11'b00001010010; // Data processing immediate
+  	           else
+		      controls = 11'b00000010010; // Data processing register
+  	  2'b01:   // Memory Instructions
+		   if (Funct[0])
+		      controls = 11'b00011110000; // LDR
+  	           else
+		   begin
+		      if (Funct[2])
+		         controls = 11'b10011101001; // STRB
+		      else
+		         controls = 11'b10011101000; // STR
+		   end
+  	  2'b10:   // Branch Instructions
+		   controls = 11'b01101000100; // B
+  	  default: // Unimplemented
+		   controls = 11'bx;         
   	endcase
 
   assign {RegSrc, ImmSrc, ALUSrc, MemtoReg, 
-          RegW, MemW, Branch, ALUOp} = controls; 
+          RegW, MemW, Branch, ALUOp, MemByte} = controls; 
           
   // ALU Decoder             
   always_comb
     if (ALUOp) begin                 // which DP Instr?
       case(Funct[4:1]) 
-  	    4'b0100: ALUControl = 2'b00; // ADD
-  	    4'b0010: ALUControl = 2'b01; // SUB
-        4'b0000: ALUControl = 2'b10; // AND
-  	    4'b1100: ALUControl = 2'b11; // ORR
-  	    default: ALUControl = 2'bx;  // unimplemented
+  	    4'b0100: // ADD
+		     begin
+			Reverse = 1'b0;
+		        ALUControl = 2'b00;
+		     end
+  	    4'b0010: // SUB
+		     begin
+			Reverse = 1'b0;
+		        ALUControl = 2'b01;
+		     end
+  	    4'b0011: // RSB
+		     begin
+			Reverse = 1'b1;
+		        ALUControl = 2'b01;
+		     end
+            4'b0000: // AND
+		     begin
+			Reverse = 1'b0;
+		        ALUControl = 2'b10;
+		     end
+  	    4'b1100: // ORR
+		     begin
+			Reverse = 1'b0;
+		        ALUControl = 2'b11;
+		     end
+  	    default: // unimplemented
+		     begin
+			Reverse = 1'bx;
+		        ALUControl = 2'bx;
+		     end
       endcase
       // update flags if S bit is set 
 	// (C & V only updated for arith instructions)
@@ -245,7 +278,7 @@ module decode(input  logic [1:0] Op,
       ALUControl = 2'b00; // add for non-DP instructions
       FlagW      = 2'b00; // don't update Flags
     end
-              
+	
   // PC Logic
   assign PCS  = ((Rd == 4'b1111) & RegW) | Branch; 
 endmodule
@@ -308,7 +341,7 @@ module datapath(input  logic        clk, reset,
                 input  logic [1:0]  RegSrc,
                 input  logic        RegWrite,
                 input  logic [1:0]  ImmSrc,
-                input  logic        ALUSrc,
+                input  logic        ALUSrc, Reverse,
                 input  logic [1:0]  ALUControl,
                 input  logic        MemtoReg,
                 input  logic        PCSrc,
@@ -321,6 +354,7 @@ module datapath(input  logic        clk, reset,
   logic [31:0] PCNext, PCPlus4, PCPlus8;
   logic [31:0] ExtImm, SrcA, SrcB, Result;
   logic [3:0]  RA1, RA2;
+  logic [31:0] RD1, RD2;
 
   // next PC logic
   mux2 #(32)  pcmux(PCPlus4, Result, PCSrc, PCNext);
@@ -333,15 +367,80 @@ module datapath(input  logic        clk, reset,
   mux2 #(4)   ra2mux(Instr[3:0], Instr[15:12], RegSrc[1], RA2);
   regfile     rf(clk, RegWrite, RA1, RA2,
                  Instr[15:12], Result, PCPlus8, 
-                 SrcA, WriteData); 
+                 RD1, RD2);
   mux2 #(32)  resmux(ALUResult, ReadData, MemtoReg, Result);
   extend      ext(Instr[23:0], ImmSrc, ExtImm);
 
+	
   // ALU logic
-  mux2 #(32)  srcbmux(WriteData, ExtImm, ALUSrc, SrcB);
+  // ALU logic
+  mux2 #(32)  srcamux(RD1, RD2, Reverse, SrcA);         // Mux to determine SrcA
+  mux2 #(32)  Wdmux(RD2, RD1, Reverse, WriteData);      // Mux to determine WriteData
+  mux2 #(32)  srcbmux(WriteData, ExtImm, ALUSrc, SrcB); // Mux to determine SrcB
   alu         alu(SrcA, SrcB, ALUControl, 
                   ALUResult, ALUFlags);
 endmodule
+
+
+//----------------------------------------------------------
+
+
+module adderalu #(parameter N = 8)
+	         (input logic [N-1:0] a, b,
+	          input logic cin,
+	          output logic [N-1:0] s,
+	          output logic cout);
+   assign {cout, s} = a + b + cin;
+endmodule
+
+module alu #(parameter N = 32)
+	    (input  logic [N-1:0] a, b,
+	     input  logic [1:0]   ALUControl,
+	     output logic [N-1:0] Result,
+	     output logic [3:0]   ALUFlags);
+
+   logic [N-1:0] resultADD, resultSUB, resultAND, resultOR;
+   logic	 cout, coutADD, coutSUB;
+
+   adderalu #(32) adder_inst(a, b, 1'b0, resultADD, coutADD);
+   adderalu #(32) subtractor_inst(a, ~b, 1'b1, resultSUB, coutSUB);
+   assign resultAND = a & b;
+   assign resultOR = a | b;
+
+   always_comb
+   begin
+      case (ALUControl)
+         2'b00:	// Add
+		begin
+		assign Result = resultADD;
+		assign cout = coutADD;
+		end
+         2'b01:	// Subtract
+		begin
+		assign Result = resultSUB;
+		assign cout = coutSUB;
+		end
+         2'b10:	// AND
+		assign Result = resultAND;
+         2'b11:	// OR
+		assign Result = resultOR;
+      endcase
+   end
+   // ALUFlags: [3] = Negative     [2] = Zero     [1] = Carry out     [0] = oVerflow
+   assign ALUFlags[3] = Result[N-1];
+   assign ALUFlags[2] = ~Result;
+   assign ALUFlags[1] = ~ALUControl[1] & cout;
+   assign ALUFlags[0] = ~(a[N-1]^b[N-1]^ALUControl[0]) & (a[N-1]^Result[N-1])&~ALUControl[1];
+endmodule
+
+
+
+
+
+
+
+
+//----------------------------------------------------------
 
 module regfile(input  logic        clk, 
                input  logic        we3, 
