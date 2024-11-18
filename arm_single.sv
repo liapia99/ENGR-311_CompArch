@@ -59,7 +59,7 @@
 //    cond  Meaning                       Flag
 //    0000  Equal                         Z = 1
 //    0001  Not Equal                     Z = 0
-//    0010  Carry Set                     C = 1
+//    0010  Carry Set                     C = 1w
 //    0011  Carry Clear                   C = 0
 //    0100  Minus                         N = 1
 //    0101  Plus                          N = 0
@@ -75,14 +75,16 @@
 
 module testbench();
 
-  logic        clk;
-  logic        reset;
-
-  logic [31:0] WriteData, DataAdr;
+  logic        clk, reset;
+  logic [31:0] PC;
+  logic [31:0] Instr;
   logic        MemWrite;
-
+  logic [31:0] ALUResult, WriteData;
+  logic [31:0] ReadData;
+  
   // instantiate device to be tested
-  top dut(clk, reset, WriteData, DataAdr, MemWrite);
+    top dut(clk, reset, PC, Instr, ALUResult, MemWrite, WriteData, ReadData, DataAdr);
+
   
   // initialize test
   initial
@@ -111,9 +113,12 @@ module testbench();
     end
 endmodule
 
-module top(input  logic        clk, reset, 
-           output logic [31:0] WriteData, DataAdr, 
-           output logic        MemWrite);
+module top(input  logic        clk, reset,
+           output logic [31:0] PC,
+           input  logic [31:0] Instr,
+           output logic        MemWrite,
+           output logic [31:0] ALUResult, WriteData,
+           input  logic [31:0] ReadData);
 
   logic [31:0] PC, Instr, ReadData;
   logic MemByte; 
@@ -520,4 +525,3 @@ module mux2 #(parameter WIDTH = 8)
 
   assign y = s ? d1 : d0; 
 endmodule
-
